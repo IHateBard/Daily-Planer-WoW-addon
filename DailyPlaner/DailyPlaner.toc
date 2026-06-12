@@ -1,0 +1,11 @@
+## Interface: 120001, 110205
+## Title: Daily Planer
+## Notes: Планировщик ежедневных активностей с вкладками-заметками
+## Author: Dmitry
+## Version: 1.0.0
+## SavedVariables: DailyPlanerDB
+## DefaultState: enabled
+
+Core.lua
+Data.lua
+UI.lua
