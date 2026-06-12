@@ -2,10 +2,12 @@
 ## Title: Daily Planer
 ## Notes: Планировщик ежедневных активностей с вкладками-заметками
 ## Author: Dmitry
-## Version: 1.0.6
+## Version: 1.1.0.1
 ## SavedVariables: DailyPlanerDB
 ## DefaultState: enabled
 
 Data.lua
+Items.lua
+Quests.lua
 UI.lua
 Core.lua

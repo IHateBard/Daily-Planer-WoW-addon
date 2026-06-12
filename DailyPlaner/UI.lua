@@ -3,6 +3,10 @@ local ADDON_NAME = ...
 DailyPlaner = DailyPlaner or {}
 local DP = DailyPlaner
 
+local function NormalizeId(id)
+    return tonumber(id)
+end
+
 local FRAME_WIDTH = 340
 local FRAME_HEIGHT = 440
 local HEADER_HEIGHT = 32
@@ -10,6 +14,7 @@ local TAB_HEIGHT = 30
 local FOOTER_HEIGHT = 46
 local ROW_HEIGHT = 30
 local PADDING = 14
+local RESULT_LIST_WIDTH = 280
 
 local COLORS = {
     bg = { 0.10, 0.08, 0.06, 0.97 },
@@ -22,6 +27,7 @@ local COLORS = {
     text = { 0.93, 0.88, 0.76, 1 },
     textMuted = { 0.58, 0.52, 0.44, 1 },
     accent = { 0.90, 0.78, 0.38, 1 },
+    quest = { 0.78, 0.86, 1.0, 1 },
     done = { 0.50, 0.47, 0.42, 1 },
     rowHover = { 1, 1, 1, 0.07 },
     delete = { 0.82, 0.38, 0.38, 1 },
@@ -209,6 +215,7 @@ function DP:RefreshUI()
     if not self.frame then
         return
     end
+    self:SyncQuestItems()
     self:RefreshTabs()
     self:RefreshItems()
     self:UpdateSubtitle()
@@ -225,10 +232,10 @@ function DP:UpdateSubtitle()
         return
     end
 
-    local total = #note.items
+    local total = self:GetItemCount(note)
     local done = 0
-    for _, item in ipairs(note.items) do
-        if item.done then
+    for _, item in ipairs(self:IterateNoteItems(note)) do
+        if self:IsQuestItemDone(item) then
             done = done + 1
         end
     end
@@ -245,7 +252,7 @@ function DP:RefreshTabs()
     ClearChildren(content)
 
     local x = 0
-    local activeId = self.db.activeNoteId
+    local activeId = NormalizeId(self.db.activeNoteId)
     local activeLeft, activeWidth
 
     for _, note in ipairs(self.db.notes) do
@@ -256,7 +263,7 @@ function DP:RefreshTabs()
         tab:SetSize(tabWidth, TAB_HEIGHT - 6)
         tab:SetPoint("TOPLEFT", x, 0)
 
-        local isActive = note.id == activeId
+        local isActive = NormalizeId(note.id) == activeId
         if isActive then
             activeLeft = x
             activeWidth = tabWidth
@@ -403,6 +410,170 @@ function DP:ShowRenameDialog(note)
     end)
 end
 
+function DP:RefreshQuestSearchResults()
+    if not self.questResultContent then
+        return
+    end
+
+    local content = self.questResultContent
+    ClearChildren(content)
+
+    local query = strtrim(self.questSearchInput:GetText() or "")
+    local questId, searchText = self:ParseQuestInput(query)
+    local results = {}
+    local y = 0
+
+    if questId then
+        table.insert(results, {
+            questId = questId,
+            title = self:GetQuestTitle(questId),
+        })
+        self:RequestQuestTitle(questId, function()
+            if self.questAddFrame and self.questAddFrame:IsShown() then
+                self:RefreshQuestSearchResults()
+            end
+        end)
+    elseif searchText and searchText ~= "" then
+        results = self:SearchQuestsByName(searchText)
+    end
+
+    self.lastQuestSearchResults = results
+
+    if #results == 0 then
+        local empty = CreateFontString(content, "small", COLORS.textMuted, "LEFT")
+        empty:SetPoint("TOPLEFT", 8, -8)
+        empty:SetWidth(RESULT_LIST_WIDTH - 16)
+        if questId then
+            empty:SetText("Загрузка данных квеста...\nНажмите Enter или кликните по строке ниже.")
+        elseif self.pendingQuestSearch or self.globalScanInProgress then
+            empty:SetText("Поиск по картам мира...\nПодождите секунду — список обновится сам.")
+        else
+            empty:SetText("Ничего не найдено.\nПопробуйте ID (94385), ссылку Shift+клик из чата\nили часть названия квеста.")
+        end
+        content:SetHeight(56)
+        return
+    end
+
+    for _, result in ipairs(results) do
+        local btn = CreateFrame("Button", nil, content)
+        btn:SetSize(RESULT_LIST_WIDTH, 24)
+        btn:SetPoint("TOPLEFT", 0, -y)
+        y = y + 26
+
+        local bg = btn:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        bg:SetColorTexture(0.08, 0.07, 0.05, 0.8)
+
+        local label = CreateFontString(btn, "small", COLORS.quest, "LEFT")
+        label:SetPoint("LEFT", 8, 0)
+        label:SetPoint("RIGHT", -8, 0)
+        label:SetMaxLines(1)
+        label:SetText(string.format("%s (#%d)", result.title, result.questId))
+
+        btn:SetScript("OnEnter", function()
+            bg:SetColorTexture(COLORS.rowHover[1], COLORS.rowHover[2], COLORS.rowHover[3], 0.12)
+        end)
+        btn:SetScript("OnLeave", function()
+            bg:SetColorTexture(0.08, 0.07, 0.05, 0.8)
+        end)
+        btn:SetScript("OnClick", function()
+            self:AddQuestFromSearchResult(result.questId)
+        end)
+    end
+
+    content:SetHeight(math.max(y, 24))
+end
+
+function DP:ShowQuestAddDialog()
+    if not self.questAddFrame then
+        local f = CreateFrame("Frame", "DailyPlanerQuestAddFrame", UIParent, "BackdropTemplate")
+        f:SetSize(360, 320)
+        f:SetPoint("CENTER")
+        f:SetFrameStrata("DIALOG")
+        SetBackdrop(f, COLORS.bg, COLORS.border)
+        f:EnableMouse(true)
+        f:SetMovable(true)
+        f:RegisterForDrag("LeftButton")
+        f:SetScript("OnDragStart", f.StartMoving)
+        f:SetScript("OnDragStop", f.StopMovingOrSizing)
+
+        local title = CreateFontString(f, nil, COLORS.accent)
+        title:SetPoint("TOP", 0, -14)
+        title:SetText("Добавить квест")
+
+        local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+        closeBtn:SetPoint("TOPRIGHT", -2, -2)
+        closeBtn:SetScript("OnClick", function()
+            f:Hide()
+        end)
+
+        local input = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
+        input:SetPoint("TOPLEFT", 14, -40)
+        input:SetPoint("TOPRIGHT", -14, -40)
+        input:SetHeight(24)
+        input:SetAutoFocus(false)
+        input:SetHyperlinksEnabled(true)
+        f.searchInput = input
+
+        local searchBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+        searchBtn:SetSize(72, 24)
+        searchBtn:SetPoint("TOPRIGHT", -14, -72)
+        searchBtn:SetText("Найти")
+
+        local addBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+        addBtn:SetSize(88, 24)
+        addBtn:SetPoint("RIGHT", searchBtn, "LEFT", -6, 0)
+        addBtn:SetText("Добавить")
+
+        local hint = CreateFontString(f, "small", COLORS.textMuted, "LEFT")
+        hint:SetPoint("TOPLEFT", 16, -100)
+        hint:SetPoint("TOPRIGHT", -16, -100)
+        hint:SetText("ID (94385), Shift+клик по квесту в чате, или название.\nEnter / «Добавить» — сразу в список, «Найти» — поиск.")
+
+        local listArea = CreateFrame("Frame", nil, f, "BackdropTemplate")
+        listArea:SetPoint("TOPLEFT", 14, -128)
+        listArea:SetPoint("BOTTOMRIGHT", -14, 14)
+        SetBackdrop(listArea, COLORS.panel, COLORS.border)
+
+        local scroll = CreateFrame("ScrollFrame", nil, listArea, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 4, -4)
+        scroll:SetPoint("BOTTOMRIGHT", -24, 4)
+
+        local resultContent = CreateFrame("Frame", nil, scroll)
+        resultContent:SetWidth(RESULT_LIST_WIDTH)
+        scroll:SetScrollChild(resultContent)
+        f.resultContent = resultContent
+
+        addBtn:SetScript("OnClick", function()
+            self:TryAddQuestFromSearchInput()
+        end)
+        searchBtn:SetScript("OnClick", function()
+            self:RefreshQuestSearchResults()
+        end)
+        input:SetScript("OnEnterPressed", function()
+            self:TryAddQuestFromSearchInput()
+        end)
+        input:SetScript("OnHyperlinkClick", function(_, link)
+            local linkQuestId = link and link:match("quest:(%d+)")
+            if linkQuestId then
+                self:AddQuestFromSearchResult(tonumber(linkQuestId))
+            end
+        end)
+        input:SetScript("OnEscapePressed", function()
+            f:Hide()
+        end)
+
+        self.questAddFrame = f
+        self.questSearchInput = input
+        self.questResultContent = resultContent
+    end
+
+    self.questSearchInput:SetText("")
+    self.questAddFrame:Show()
+    self.questSearchInput:SetFocus()
+    self:RefreshQuestSearchResults()
+end
+
 function DP:RefreshItems()
     local scroll = self.itemScroll
     local content = self.itemContent
@@ -413,11 +584,15 @@ function DP:RefreshItems()
         return
     end
 
+    self:EnsureNoteItems(note)
+
     local innerWidth = GetScrollInnerWidth(scroll, FRAME_WIDTH - PADDING * 2 - 36)
     content:SetWidth(innerWidth)
 
     local y = 4
-    for _, item in ipairs(note.items) do
+    local itemCount = 0
+    for _, item in ipairs(self:IterateNoteItems(note)) do
+        itemCount = itemCount + 1
         local row = CreateFrame("Frame", nil, content)
         row:SetSize(innerWidth, ROW_HEIGHT)
         row:SetPoint("TOPLEFT", 0, -y)
@@ -428,24 +603,35 @@ function DP:RefreshItems()
         rowBg:SetAllPoints()
         rowBg:SetColorTexture(0, 0, 0, 0)
 
+        local isQuest = self:IsQuestItem(item)
+        local isDone = self:IsQuestItemDone(item)
+        local displayText = self:GetItemDisplayText(item)
+
         local check = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
         check:SetSize(24, 24)
         check:SetPoint("LEFT", 6, 0)
-        check:SetChecked(item.done)
+        check:SetChecked(isDone)
         check.itemId = item.id
-        check:SetScript("OnClick", function(btn)
-            self:ToggleItem(note.id, btn.itemId)
-            self:RefreshUI()
-        end)
 
-        local label = CreateFontString(row, nil, item.done and COLORS.done or COLORS.text)
-        label:SetPoint("LEFT", check, "RIGHT", 4, 0)
-        label:SetPoint("RIGHT", row, "RIGHT", -36, 0)
-        label:SetJustifyH("LEFT")
-        label:SetMaxLines(1)
-        label:SetText(item.text)
-        if item.done then
-            label:SetTextColor(COLORS.done[1], COLORS.done[2], COLORS.done[3], 1)
+        if isQuest then
+            check:SetScript("OnClick", function(btn)
+                btn:SetChecked(self:IsQuestItemDone(item))
+            end)
+        else
+            check:SetScript("OnClick", function(btn)
+                self:ToggleItem(note.id, btn.itemId)
+                self:RefreshUI()
+            end)
+        end
+
+        local textAnchor = check
+
+        if isQuest then
+            local questIcon = row:CreateTexture(nil, "ARTWORK")
+            questIcon:SetSize(14, 14)
+            questIcon:SetPoint("LEFT", check, "RIGHT", 2, 0)
+            questIcon:SetTexture("Interface\\MINIMAP\\TRACKING\\QuestBlob")
+            textAnchor = questIcon
         end
 
         local del = CreateFrame("Button", nil, row)
@@ -480,12 +666,46 @@ function DP:RefreshItems()
             end
         end
 
-        row:SetScript("OnEnter", function()
-            setRowHover(true)
-        end)
-        row:SetScript("OnLeave", function()
-            setRowHover(false)
-        end)
+        local textColor = isDone and COLORS.done or (isQuest and COLORS.quest or COLORS.text)
+        local labelBtn = CreateFrame("Button", nil, row)
+        labelBtn:SetPoint("LEFT", textAnchor, "RIGHT", 4, 0)
+        labelBtn:SetPoint("RIGHT", row, "RIGHT", -36, 0)
+        labelBtn:SetHeight(ROW_HEIGHT)
+
+        local label = CreateFontString(labelBtn, nil, textColor, "LEFT")
+        label:SetPoint("LEFT", 0, 0)
+        label:SetPoint("RIGHT", 0, 0)
+        label:SetMaxLines(1)
+        label:SetText(displayText)
+
+        if isQuest then
+            labelBtn:SetScript("OnClick", function()
+                self:FocusQuest(self:GetQuestId(item))
+            end)
+            labelBtn:SetScript("OnEnter", function()
+                GameTooltip:SetOwner(labelBtn, "ANCHOR_RIGHT")
+                GameTooltip:SetText(displayText, 1, 1, 1)
+                if self:IsQuestInLog(self:GetQuestId(item)) then
+                    GameTooltip:AddLine("Клик — открыть в журнале квестов", 0.7, 0.7, 0.7)
+                else
+                    GameTooltip:AddLine("Клик — метка на карте", 0.7, 0.7, 0.7)
+                end
+                GameTooltip:Show()
+                setRowHover(true)
+            end)
+            labelBtn:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+                setRowHover(false)
+            end)
+        else
+            row:SetScript("OnEnter", function()
+                setRowHover(true)
+            end)
+            row:SetScript("OnLeave", function()
+                setRowHover(false)
+            end)
+        end
+
         del:SetScript("OnEnter", function()
             setRowHover(true)
         end)
@@ -494,11 +714,11 @@ function DP:RefreshItems()
         end)
     end
 
-    if #note.items == 0 then
+    if itemCount == 0 then
         local empty = CreateFontString(content, "small", COLORS.textMuted, "CENTER")
         empty:SetPoint("TOP", 0, -48)
         empty:SetWidth(innerWidth - 16)
-        empty:SetText("Список пуст.\nДобавьте активность в поле ниже.")
+        empty:SetText("Список пуст.\nДобавьте активность или квест ниже.")
     end
 
     content:SetHeight(math.max(y + 8, scroll:GetHeight()))
@@ -647,7 +867,7 @@ function DP:InitUI()
 
     local input = CreateFrame("EditBox", nil, footer, "InputBoxTemplate")
     input:SetPoint("LEFT", 12, 0)
-    input:SetPoint("RIGHT", footer, "RIGHT", -92, 0)
+    input:SetPoint("RIGHT", footer, "RIGHT", -168, 0)
     input:SetHeight(24)
     input:SetAutoFocus(false)
     input:SetMaxLetters(120)
@@ -673,9 +893,17 @@ function DP:InitUI()
         end
     end)
 
+    local questBtn = CreateFrame("Button", nil, footer, "UIPanelButtonTemplate")
+    questBtn:SetSize(68, 26)
+    questBtn:SetPoint("RIGHT", -10, 0)
+    questBtn:SetText("Квест")
+    questBtn:SetScript("OnClick", function()
+        self:ShowQuestAddDialog()
+    end)
+
     local addBtn = CreateFrame("Button", nil, footer, "UIPanelButtonTemplate")
-    addBtn:SetSize(76, 26)
-    addBtn:SetPoint("RIGHT", -10, 0)
+    addBtn:SetSize(68, 26)
+    addBtn:SetPoint("RIGHT", questBtn, "LEFT", -6, 0)
     addBtn:SetText("Добавить")
 
     local function submitItem()

@@ -5,6 +5,10 @@ local DP = DailyPlaner
 
 local DEFAULT_NOTE_TITLE = "Заметка"
 
+local function NormalizeId(id)
+    return tonumber(id)
+end
+
 function DP:InitDB()
     if not DailyPlanerDB then
         DailyPlanerDB = {}
@@ -27,17 +31,38 @@ function DP:InitDB()
 
     db.nextNoteId = db.nextNoteId or (#db.notes + 1)
     db.nextItemId = db.nextItemId or 1
+    db.activeNoteId = NormalizeId(db.activeNoteId) or NormalizeId(db.notes[1].id)
 
     if not db.activeNoteId then
-        db.activeNoteId = db.notes[1].id
+        db.activeNoteId = NormalizeId(db.notes[1].id)
+    end
+
+    if not db.questTitleCache then
+        db.questTitleCache = {}
+    end
+
+    for _, note in ipairs(db.notes) do
+        note.id = NormalizeId(note.id) or note.id
+        self:NormalizeNoteItemsArray(note)
+        for _, item in ipairs(note.items) do
+            item.id = NormalizeId(item.id) or item.id
+            if item.kind == "quest" and NormalizeId(item.questId) then
+                item.kind = "quest"
+                item.questId = NormalizeId(item.questId)
+            elseif not item.kind then
+                item.kind = "text"
+            end
+        end
     end
 
     self.db = db
+    self:InitQuestCache()
 end
 
 function DP:GetActiveNote()
+    local activeId = NormalizeId(self.db.activeNoteId)
     for _, note in ipairs(self.db.notes) do
-        if note.id == self.db.activeNoteId then
+        if NormalizeId(note.id) == activeId then
             return note
         end
     end
@@ -45,7 +70,7 @@ function DP:GetActiveNote()
 end
 
 function DP:SetActiveNote(noteId)
-    self.db.activeNoteId = noteId
+    self.db.activeNoteId = NormalizeId(noteId)
 end
 
 function DP:AddNote(title)
@@ -69,7 +94,7 @@ function DP:DeleteNote(noteId)
     end
 
     for i, note in ipairs(self.db.notes) do
-        if note.id == noteId then
+        if NormalizeId(note.id) == NormalizeId(noteId) then
             table.remove(self.db.notes, i)
             if self.db.activeNoteId == noteId then
                 self.db.activeNoteId = self.db.notes[math.max(1, i - 1)].id
@@ -88,7 +113,7 @@ function DP:RenameNote(noteId, title)
     end
 
     for _, note in ipairs(self.db.notes) do
-        if note.id == noteId then
+        if NormalizeId(note.id) == NormalizeId(noteId) then
             note.title = title
             return true
         end
@@ -103,16 +128,57 @@ function DP:AddItem(noteId, text)
     end
 
     for _, note in ipairs(self.db.notes) do
-        if note.id == noteId then
+        if NormalizeId(note.id) == NormalizeId(noteId) then
             local id = self.db.nextItemId
             self.db.nextItemId = id + 1
 
             local item = {
                 id = id,
+                kind = "text",
                 text = text,
                 done = false,
             }
-            table.insert(note.items, item)
+
+            self:AppendItemToNote(note, item)
+            return item
+        end
+    end
+
+    return nil
+end
+
+function DP:AddQuestItem(noteId, questId)
+    questId = tonumber(questId)
+    if not questId or questId <= 0 then
+        return nil
+    end
+
+    for _, note in ipairs(self.db.notes) do
+        if NormalizeId(note.id) == NormalizeId(noteId) then
+            self:NormalizeNoteItemsArray(note)
+            for _, item in ipairs(note.items) do
+                if self:IsQuestItem(item) and self:GetQuestId(item) == NormalizeId(questId) then
+                    return nil
+                end
+            end
+
+            local id = self.db.nextItemId
+            self.db.nextItemId = id + 1
+            questId = NormalizeId(questId)
+
+            local title = self:GetQuestTitle(questId)
+            local item = {
+                id = id,
+                kind = "quest",
+                questId = questId,
+                title = title,
+                text = title,
+                done = self:IsQuestCompleted(questId),
+            }
+
+            self:AppendItemToNote(note, item)
+            self:CacheQuestTitle(questId, title)
+            self:RequestQuestTitle(questId)
             return item
         end
     end
@@ -122,13 +188,16 @@ end
 
 function DP:ToggleItem(noteId, itemId)
     for _, note in ipairs(self.db.notes) do
-        if note.id == noteId then
-            for _, item in ipairs(note.items) do
-                if item.id == itemId then
-                    item.done = not item.done
-                    return item.done
-                end
+        if NormalizeId(note.id) == NormalizeId(noteId) then
+            local item = self:FindItemInNote(note, itemId)
+            if not item then
+                return nil
             end
+            if self:IsQuestItem(item) then
+                return self:IsQuestItemDone(item)
+            end
+            item.done = not item.done
+            return item.done
         end
     end
     return nil
@@ -136,13 +205,8 @@ end
 
 function DP:DeleteItem(noteId, itemId)
     for _, note in ipairs(self.db.notes) do
-        if note.id == noteId then
-            for i, item in ipairs(note.items) do
-                if item.id == itemId then
-                    table.remove(note.items, i)
-                    return true
-                end
-            end
+        if NormalizeId(note.id) == NormalizeId(noteId) then
+            return self:RemoveItemFromNote(note, itemId)
         end
     end
     return false

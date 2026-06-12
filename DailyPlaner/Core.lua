@@ -41,6 +41,8 @@ function DP:Initialize()
 
     local ok, err = pcall(function()
         self:InitDB()
+        self:SyncQuestItems()
+        self:RegisterQuestEvents()
         self:InitUI()
     end)
 
