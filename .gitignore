@@ -17,3 +17,6 @@ desktop.ini
 # Local WoW install copies (if you symlink for testing)
 WTF/
 Account/
+
+# Локальный путь к папке AddOns (у каждого свой)
+deploy.local.json

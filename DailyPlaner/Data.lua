@@ -82,6 +82,11 @@ function DP:DeleteNote(noteId)
 end
 
 function DP:RenameNote(noteId, title)
+    title = strtrim(title or "")
+    if title == "" then
+        return false
+    end
+
     for _, note in ipairs(self.db.notes) do
         if note.id == noteId then
             note.title = title
