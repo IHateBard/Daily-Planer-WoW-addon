@@ -18,5 +18,7 @@ desktop.ini
 WTF/
 Account/
 
-# Локальный путь к папке AddOns (у каждого свой)
+# Локальный деплой в папку WoW (не в репозитории)
+scripts/
 deploy.local.json
+deploy.local.json.example

@@ -13,18 +13,6 @@
 
 ## Установка
 
-### Автоматически (для разработки)
-
-1. Скопируйте `deploy.local.json.example` в `deploy.local.json` и укажите путь к своей папке AddOns.
-2. Запустите деплой:
-   ```powershell
-   .\scripts\deploy.ps1
-   ```
-   Или дважды кликните `scripts\deploy.bat`.
-3. В игре выполните `/reload`.
-
-### Вручную
-
 1. Скопируйте папку `DailyPlaner` в каталог аддонов WoW:
    ```
    World of Warcraft\_retail_\Interface\AddOns\DailyPlaner
@@ -72,9 +60,7 @@ DailyPlaner/
 
 ## Разработка
 
-После изменения `.lua` файлов запустите `.\scripts\deploy.ps1`, затем в игре `/reload`.
-
-Файл `deploy.local.json` с путём к WoW не попадает в git — у каждого разработчика свой.
+После изменения `.lua` файлов скопируйте папку `DailyPlaner` в каталог AddOns и выполните в игре `/reload`.
 
 Номер интерфейса в `.toc` можно обновить командой в игре:
 ```
